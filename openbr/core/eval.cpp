@@ -189,258 +189,40 @@ float Evaluate(const Mat &simmat, const Mat &mask, const File &csv, const QStrin
     if (mask.type() != CV_8UC1)
         qFatal("Invalid mask format");
 
-    float result = -1;
+    float result = 1;
 
     // Make comparisons
     QList<Comparison> comparisons; comparisons.reserve(simmat.rows*simmat.cols);
-
-    // Flags rows as being mated or non-mated searches
-    // Positive value: mated search, negative value: non-mated search
-    // Value of 0: ignored search
-    QVector<int> genuineSearches(simmat.rows, 0);
-
-    int totalGenuineSearches = 0, totalImpostorSearches = 0;
-    int genuineCount = 0, impostorCount = 0, numNaNs = 0;
     for (int i=0; i<simmat.rows; i++) {
         for (int j=0; j<simmat.cols; j++) {
             const BEE::MaskValue mask_val = mask.at<BEE::MaskValue>(i,j);
             const BEE::SimmatValue simmat_val = simmat.at<BEE::SimmatValue>(i,j);
             if (mask_val == BEE::DontCare) continue;
-            if (simmat_val != simmat_val) { numNaNs++; continue; }
+            if (simmat_val != simmat_val) { continue; }
             Comparison comparison(simmat_val, j, i, mask_val == BEE::Match);
             comparisons.append(comparison);
-            if (comparison.genuine) {
-                if (genuineSearches[comparison.query] != 1) {
-                    genuineSearches[comparison.query] = 1;
-                    totalGenuineSearches++;
-                }
-                genuineCount++;
-            } else {
-                if (genuineSearches[comparison.query] != 1) {
-                    genuineSearches[comparison.query] = -1;
-                }
-                impostorCount++;
-            }                           
+
         }
     }
-
-    // This is not necessarily equal to (simmat.rows-totalGenuineSearches)
-    // since some rows could consist entirely of ignored values
-    foreach (int i, genuineSearches)
-        if (i<0) totalImpostorSearches++;
-
-    if (numNaNs > 0) qWarning("Encountered %d NaN scores!", numNaNs);
-    if (genuineCount == 0) qFatal("No genuine scores!");
-    if (impostorCount == 0) qFatal("No impostor scores!");
-
-    // Sort comparisons by simmat_val (score)
-    std::stable_sort(comparisons.begin(), comparisons.end());
-
-    QList<OperatingPoint> operatingPoints;
-    QList<OperatingPoint> searchOperatingPoints;
-    QList<float> genuines; genuines.reserve(sqrt((float)comparisons.size()));
-    QList<float> impostors; impostors.reserve(comparisons.size());
-    QVector<int> firstGenuineReturns(simmat.rows, 0);
-
-    int falsePositives = 0, previousFalsePositives = 0;
-    int truePositives = 0, previousTruePositives = 0;
-    int falseSearches = 0, previousFalseSearches = 0;
-    int trueSearches = 0, previousTrueSearches = 0;
-    int index = 0;
-    int EERIndex = 0;
-    float minGenuineScore = std::numeric_limits<float>::max();
-    float minImpostorScore = std::numeric_limits<float>::max();
-
-    while (index < comparisons.size()) {
-        float thresh = comparisons[index].score;
-        // Compute genuine and imposter statistics at a threshold
-        while ((index < comparisons.size()) &&
-               (comparisons[index].score == thresh)) {
-            const Comparison &comparison = comparisons[index];
-            if (comparison.genuine) {
-                truePositives++;
-                if (genuineSearches[comparison.query] == 1) {
-                    genuineSearches[comparison.query]++;
-                    // True positive identification
-                    trueSearches++;
-                }
-                genuines.append(comparison.score);
-                if (firstGenuineReturns[comparison.query] < 1)
-                    firstGenuineReturns[comparison.query] = abs(firstGenuineReturns[comparison.query]) + 1;
-                if ((comparison.score != -std::numeric_limits<float>::max()) &&
-                    (comparison.score < minGenuineScore))
-                    minGenuineScore = comparison.score;
-            } else {
-                falsePositives++;
-                if (genuineSearches[comparison.query] == -1) {
-                    genuineSearches[comparison.query]--;
-                    // False positive identification
-                    falseSearches++;
-                }
-                impostors.append(comparison.score);
-                if (firstGenuineReturns[comparison.query] < 1)
-                    firstGenuineReturns[comparison.query]--;
-                if ((comparison.score != -std::numeric_limits<float>::max()) &&
-                    (comparison.score < minImpostorScore))
-                    minImpostorScore = comparison.score;
-            }
-            index++;
-        }
-
-        if ((falsePositives > previousFalsePositives) &&
-             (truePositives > previousTruePositives)) {
-            operatingPoints.append(OperatingPoint(thresh, float(falsePositives)/impostorCount, float(truePositives)/genuineCount));
-
-            if (EERIndex == 0) {
-                if (floor(float(falsePositives)/impostorCount*100+0.5)/100 == floor((1-float(truePositives)/genuineCount)*100+0.5)/100) EERIndex = index-1;
-            }
-            previousFalsePositives = falsePositives;
-            previousTruePositives = truePositives;
-        }
-
-        if ((falseSearches > previousFalseSearches) &&
-             (trueSearches > previousTrueSearches)) {
-            searchOperatingPoints.append(OperatingPoint(thresh, float(falseSearches)/totalImpostorSearches, float(trueSearches)/totalGenuineSearches));
-            previousFalseSearches = falseSearches;
-            previousTrueSearches = trueSearches;
-        }
-    }
-
-    if (operatingPoints.size() == 0) operatingPoints.append(OperatingPoint(1, 1, 1));
-    if (operatingPoints.size() == 1) operatingPoints.prepend(OperatingPoint(0, 0, 0));
-    if (operatingPoints.size() > 2)  operatingPoints.takeLast(); // Remove point (1,1)
-
-    if (searchOperatingPoints.size() == 0) searchOperatingPoints.append(OperatingPoint(1, 1, 1));
-    if (searchOperatingPoints.size() == 1) searchOperatingPoints.prepend(OperatingPoint(0, 0, 0));
-    if (searchOperatingPoints.size() > 2)  searchOperatingPoints.takeLast();
 
     // Write Metadata table
     QStringList lines;
-    lines.append("Plot,X,Y");
-    lines.append("Metadata,"+QString::number(simmat.cols)+",Gallery");
-    lines.append("Metadata,"+QString::number(simmat.rows)+",Probe");
-    lines.append("Metadata,"+QString::number(genuineCount)+",Genuine");
-    lines.append("Metadata,"+QString::number(impostorCount)+",Impostor");
-    lines.append("Metadata,"+QString::number(simmat.cols*simmat.rows-(genuineCount+impostorCount))+",Ignored");
 
     QString filePath = Globals->path;
-    if (matches != 0 && EERIndex != 0) {
-        const FileList targetFiles = TemplateList::fromGallery(target).files();
-        const FileList queryFiles = TemplateList::fromGallery(query).files();
-        unsigned int count = 0;
-        for (int i = EERIndex-1; i >= 0; i--) {
-            if (!comparisons[i].genuine) {
-                lines.append("IM,"+QString::number(comparisons[i].score)+","+targetFiles[comparisons[i].target].get<QString>("Label")+":"
-                    +filePath+"/"+targetFiles[comparisons[i].target].name+":"+queryFiles[comparisons[i].query].get<QString>("Label")+":"+filePath+"/"+queryFiles[comparisons[i].query].name);
-                if (++count == matches) break;
-            }
+    const FileList targetFiles = TemplateList::fromGallery(target).files();
+    const FileList queryFiles = TemplateList::fromGallery(query).files();
+
+    for (int i=0; i<comparisons.size(); i++) {
+        if (comparisons[i].score > 0.55 && !comparisons[i].genuine) {
+            lines.append("TI,"+QString::number(comparisons[i].score)+","+targetFiles[comparisons[i].target].get<QString>("Label")+":"
+                +filePath+"/"+targetFiles[comparisons[i].target].name+":"+queryFiles[comparisons[i].query].get<QString>("Label")+":"+filePath+"/"+queryFiles[comparisons[i].query].name);
+        } else if (comparisons[i].score < 0.3 && comparisons[i].genuine) {
+            lines.append("BG,"+QString::number(comparisons[i].score)+","+targetFiles[comparisons[i].target].get<QString>("Label")+":"
+                +filePath+"/"+targetFiles[comparisons[i].target].name+":"+queryFiles[comparisons[i].query].get<QString>("Label")+":"+filePath+"/"+queryFiles[comparisons[i].query].name);
         }
-        count = 0;
-        for (int i = EERIndex+1; i < comparisons.size(); i++) {
-            if (comparisons[i].genuine) {
-                lines.append("GM,"+QString::number(comparisons[i].score)+","+targetFiles[comparisons[i].target].get<QString>("Label")+":"
-                    +filePath+"/"+targetFiles[comparisons[i].target].name+":"+queryFiles[comparisons[i].query].get<QString>("Label")+":"+filePath+"/"+queryFiles[comparisons[i].query].name);
-                if (++count == matches) break;
-            }
-        }
-    }
-
-    // Write Detection Error Tradeoff (DET), PRE, REC, Identification Error Tradeoff (IET)
-    float expFAR = csv.get<float>("FAR", std::max(ceil(log10(impostorCount)), 1.0));
-    float expFRR = csv.get<float>("FRR", std::max(ceil(log10(genuineCount)), 1.0));
-    float expFPIR = csv.get<float>("FPIR", std::max(ceil(log10(totalImpostorSearches)), 1.0));
-
-    float FARstep = expFAR / (float)(Max_Points - 1);
-    float FRRstep = expFRR / (float)(Max_Points - 1);
-    float FPIRstep = expFPIR / (float)(Max_Points - 1);
-
-    for (int i=0; i<Max_Points; i++) {
-        float FAR = pow(10, -expFAR + i*FARstep);
-        float FRR = pow(10, -expFRR + i*FRRstep);
-        float FPIR = pow(10, -expFPIR + i*FPIRstep);
-
-        OperatingPoint operatingPointFAR = getOperatingPointGivenFAR(operatingPoints, FAR);
-        OperatingPoint operatingPointTAR = getOperatingPointGivenTAR(operatingPoints, 1-FRR);
-        OperatingPoint searchOperatingPoint = getOperatingPointGivenFAR(searchOperatingPoints, FPIR);
-        lines.append(QString("DET,%1,%2").arg(QString::number(FAR),
-                                              QString::number(1-operatingPointFAR.TAR)));
-        lines.append(QString("FAR,%1,%2").arg(QString::number(operatingPointFAR.score),
-                                              QString::number(FAR)));
-        lines.append(QString("FRR,%1,%2").arg(QString::number(operatingPointTAR.score),
-                                              QString::number(FRR)));
-        lines.append(QString("IET,%1,%2").arg(QString::number(searchOperatingPoint.FAR),
-                                              QString::number(1-searchOperatingPoint.TAR)));
-    }
-
-    // Write TAR@FAR Table (TF)
-    foreach (float far, QList<float>() << 1e-6 << 1e-5 << 1e-4 << 1e-3 << 1e-2 << 1e-1)
-      lines.append(qPrintable(QString("TF,%1,%2").arg(
-						      QString::number(far, 'f'),
-						      QString::number(getOperatingPointGivenFAR(operatingPoints, far).TAR, 'f', 3))));
-
-    // Write FAR@TAR Table (FT)
-    foreach (float tar, QList<float>() << 0.95 << 0.85 << 0.75 << 0.65 << 0.5 << 0.4)
-      lines.append(qPrintable(QString("FT,%1,%2").arg(
-                         QString::number(tar, 'f', 2),
-                         QString::number(getOperatingPointGivenTAR(operatingPoints, tar).FAR, 'f', 3))));
-
-    //Write CMC Table (CT)
-    lines.append(qPrintable(QString("CT,1,%1").arg(QString::number(getCMC(firstGenuineReturns, 1), 'f', 3))));
-    lines.append(qPrintable(QString("CT,5,%1").arg(QString::number(getCMC(firstGenuineReturns, 5), 'f', 3))));
-    lines.append(qPrintable(QString("CT,10,%1").arg(QString::number(getCMC(firstGenuineReturns, 10), 'f', 3))));
-    lines.append(qPrintable(QString("CT,20,%1").arg(QString::number(getCMC(firstGenuineReturns, 20), 'f', 3))));
-    lines.append(qPrintable(QString("CT,50,%1").arg(QString::number(getCMC(firstGenuineReturns, 50), 'f', 3))));
-    lines.append(qPrintable(QString("CT,100,%1").arg(QString::number(getCMC(firstGenuineReturns, 100), 'f', 3))));
-
-    // Write FAR/TAR Bar Chart (BC)
-    lines.append(qPrintable(QString("BC,0.001,%1").arg(QString::number(getOperatingPointGivenFAR(operatingPoints, 0.001).TAR, 'f', 3))));
-    lines.append(qPrintable(QString("BC,0.01,%1").arg(QString::number(result = getOperatingPointGivenFAR(operatingPoints, 0.01).TAR, 'f', 3))));
-
-    // Attempt to read template size from enrolled gallery and write to output CSV
-    size_t maxSize(0);
-    if (target.endsWith(".gal") && QFileInfo(target).exists()) {
-        foreach (const Template &t, TemplateList::fromGallery(target)) maxSize = max(maxSize, t.bytes());
-        lines.append(QString("TS,,%1").arg(QString::number(maxSize)));
-    }
-
-    // Write SD & KDE
-    int points = qMin(qMin(Max_Points, genuines.size()), impostors.size());
-    QList<double> sampledGenuineScores; sampledGenuineScores.reserve(points);
-    QList<double> sampledImpostorScores; sampledImpostorScores.reserve(points);
-
-    if (points > 1) {
-        for (int i=0; i<points; i++) {
-            float genuineScore = genuines[double(i) / double(points-1) * double(genuines.size()-1)];
-            float impostorScore = impostors[double(i) / double(points-1) * double(impostors.size()-1)];
-            if (genuineScore == -std::numeric_limits<float>::max()) genuineScore = minGenuineScore;
-            if (impostorScore == -std::numeric_limits<float>::max()) impostorScore = minImpostorScore;
-            lines.append(QString("SD,%1,Genuine").arg(QString::number(genuineScore)));
-            lines.append(QString("SD,%1,Impostor").arg(QString::number(impostorScore)));
-            sampledGenuineScores.append(genuineScore);
-            sampledImpostorScores.append(impostorScore);
-        }
-    }
-
-    // Write Cumulative Match Characteristic (CMC) curve
-    const int Max_Retrieval = 200;
-    const int Report_Retrieval = 5;
-    for (int i=1; i<=Max_Retrieval; i++) {
-        const float retrievalRate = getCMC(firstGenuineReturns, i);
-        lines.append(qPrintable(QString("CMC,%1,%2").arg(QString::number(i), QString::number(retrievalRate))));
     }
 
     QtUtils::writeFile(csv, lines);
-    if (maxSize > 0) qDebug("Template Size: %i bytes", (int)maxSize);
-    qDebug("TAR @ FAR = 0.01:    %.3f",getOperatingPointGivenFAR(operatingPoints, 0.01).TAR);
-    qDebug("TAR @ FAR = 0.001:   %.3f",getOperatingPointGivenFAR(operatingPoints, 0.001).TAR);
-    qDebug("TAR @ FAR = 0.0001:  %.3f",getOperatingPointGivenFAR(operatingPoints, 0.0001).TAR);
-    qDebug("TAR @ FAR = 0.00001: %.3f",getOperatingPointGivenFAR(operatingPoints, 0.00001).TAR);
-
-    qDebug("FNIR @ FPIR = 0.1:   %.3f", 1-getOperatingPointGivenFAR(searchOperatingPoints, 0.1).TAR);
-    qDebug("FNIR @ FPIR = 0.01:  %.3f", 1-getOperatingPointGivenFAR(searchOperatingPoints, 0.01).TAR);
-
-    qDebug("\nRetrieval Rate @ Rank = %d: %.3f", Report_Retrieval, getCMC(firstGenuineReturns, Report_Retrieval));
-
     return result;
 }
 
